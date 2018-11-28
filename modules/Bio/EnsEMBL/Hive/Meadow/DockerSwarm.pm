@@ -80,9 +80,54 @@ sub name {  # also called to check for availability
 sub _get_our_task_attribs {
     my ($self) = @_;
 
-    my $container_prefix    = `hostname`; chomp $container_prefix;
+    #my $container_prefix    = `hostname`; chomp $container_prefix;
+    #my $cmd = 'cat /proc/self/cgroup | grep docker | sed -e s/\\//\\n/g | tail -1';
+    my $cmd = q(cat /proc/self/cgroup | grep docker | sed -e s/\\\\//\\\\n/g | tail -1);
+    my $container_prefix    = `$cmd`; chomp $container_prefix;
+
+
+# ID                            HOSTNAME            STATUS              AVAILABILITY        MANAGER STATUS      ENGINE VERSION
+# lcprncbmd0z1523t0ft8ej9uy *   head-node           Ready               Active              Leader              18.09.0
+# ksactwapa4nxaaokcj1xw62pr     worker-1            Ready               Active                                  18.09.0
+# wcms6zxgq0hocoutznggs9r0u     worker-2            Ready               Active                                  18.09.0
+# ior43tdjz9x7n4bzzmr5njvcr     worker-3            Ready               Active                                  18.09.0
+# l6khe63f71z3ntv4abii3n9o1     worker-4            Ready               Active                                  18.09.0
+# nvmy341e4a3sqtt9k3cfdmc7w     worker-5            Ready               Active                                  18.09.0
+# w42pyk5wvoa0qrzbnjhn1yyt7     worker-6            Ready               Active                                  18.09.0
+# 28h1sk9zwkw53bkv4bi95q2f1     worker-7            Ready               Active                                  18.09.0
+# rldg2wm4h19oo9cxxrdbpx5n4     worker-8            Ready               Active                                  18.09.0
+# 72cv6frnei4gjdv3p3l8bmd3c     worker-9            Ready               Active                                  18.09.0
+# u21fny9eapmh09sflk45zzscz     worker-10           Ready               Active                                  18.09.0
+
+# my @docker_node_ls = qw(
+#     lcprncbmd0z1523t0ft8ej9uy     head-node 
+#     ksactwapa4nxaaokcj1xw62pr     worker-1  
+#     wcms6zxgq0hocoutznggs9r0u     worker-2  
+#     ior43tdjz9x7n4bzzmr5njvcr     worker-3  
+#     l6khe63f71z3ntv4abii3n9o1     worker-4  
+#     nvmy341e4a3sqtt9k3cfdmc7w     worker-5  
+#     w42pyk5wvoa0qrzbnjhn1yyt7     worker-6  
+#     28h1sk9zwkw53bkv4bi95q2f1     worker-7  
+#     rldg2wm4h19oo9cxxrdbpx5n4     worker-8  
+#     72cv6frnei4gjdv3p3l8bmd3c     worker-9  
+#     u21fny9eapmh09sflk45zzscz     worker-10 
+# );
+# 
+# my %hostname_to_node_id = reverse @docker_node_ls;
+# 
+use Data::Dumper;
+# print Dumper(\%hostname_to_node_id);
+# 
+# my $node_id = $hostname_to_node_id{$container_prefix};
+# 
+# print "My node id is: $node_id\n";
+print "My container_prefix is: $container_prefix\n";
+
     my $tasks_list          = $self->GET( '/tasks' );
-    my ($our_task_attribs)  = grep { ($_->{'Status'}{'ContainerStatus'}{'ContainerID'} || '') =~ /^${container_prefix}/ } @$tasks_list;
+     my ($our_task_attribs)  = grep { ($_->{'Status'}{'ContainerStatus'}{'ContainerID'} || '') =~ /^${container_prefix}/ } @$tasks_list;
+#     my ($our_task_attribs)  = grep { ($_->{'ID'} || '') =~ /^$node_id/ } @$tasks_list;
+
+print "My task attribs: " . Dumper($our_task_attribs);
 
     return $our_task_attribs;
 }
@@ -173,6 +218,8 @@ sub submit_workers_return_meadow_pids {
     my $worker_cmd_components = [ split_for_bash($worker_cmd) ];
 
     my $job_array_common_name = $self->job_array_common_name($rc_name, $iteration);
+    
+    print "--> job_array_common_name = $job_array_common_name\n";
 
     # Name collision detection
     my $extra_suffix = 0;
@@ -195,6 +242,30 @@ sub submit_workers_return_meadow_pids {
         },
     };
     my $resources = destringify($rc_specific_submission_cmd_args);
+
+    if (exists $resources->{Reservations} && exists $resources->{Reservations}->{MemoryBytes}) {
+    
+        print "Found reservations!";
+        
+        my $x = $resources->{Reservations}->{MemoryBytes};
+        $x += 0;
+        $resources->{Reservations}->{MemoryBytes} = $x;
+    
+        my $x = $resources->{Limits}->{MemoryBytes};
+        $x += 0;
+        $resources->{Limits}->{MemoryBytes} = $x;
+    
+    }
+
+#       'Resources' => {
+#                                                'Reservations' => {
+#                                                                    'NanoCPUs' => 1000000000,
+#                                                                    'MemoryBytes' => '34359738368'
+#                                                                  },
+#                                                'Limits' => {
+#                                                              'NanoCPUs' => 1000000000,
+#                                                              'MemoryBytes' => '34359738368'
+#                                                            }
 
     my $service_create_data = {
         'Name'          => $job_array_common_name,      # NB: service names in DockerSwarm have to be unique!
@@ -226,13 +297,26 @@ sub submit_workers_return_meadow_pids {
             },
         },
     };
+    
+    use Data::Dumper;
+    print "\nSubmitting workers:\n";
+    print Dumper($service_create_data);
 
     my $service_created_struct  = $self->POST( '/services/create', $service_create_data );
 #    my $service_id              = $service_created_struct->{'ID'};
+    sleep(5);
+    # filters='{"name":["probemapping-Hive-default-24_1"]}'
+    my $service_tasks_list_url = q(/tasks?filters={"name":[") . $job_array_common_name . q("]});
+    print "--> service_tasks_list_url = $service_tasks_list_url\n";
+    my $service_tasks_list      = $self->GET( $service_tasks_list_url );
 
-    my $service_tasks_list      = $self->GET( '/tasks?filters={"name":["' . $job_array_common_name . '"]}' );
+    print "\nservice_tasks_list:\n";
+    print Dumper($service_tasks_list);
 
     my @children_task_ids       = map { $_->{'ID'} } @$service_tasks_list;
+
+    print "\nchildren_task_ids:\n";
+    print Dumper(\@children_task_ids);
 
     return \@children_task_ids;
 }
