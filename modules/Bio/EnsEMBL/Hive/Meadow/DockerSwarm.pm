@@ -243,7 +243,7 @@ sub submit_workers_return_meadow_pids {
     };
     my $resources = destringify($rc_specific_submission_cmd_args);
 
-    if (exists $resources->{Reservations} && exists $resources->{Reservations}->{MemoryBytes}) {
+    if (ref $resources eq 'HASH' && exists $resources->{Reservations} && exists $resources->{Reservations}->{MemoryBytes}) {
     
         print "Found reservations!";
         
