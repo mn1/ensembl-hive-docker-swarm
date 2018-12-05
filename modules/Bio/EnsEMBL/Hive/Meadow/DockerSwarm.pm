@@ -72,6 +72,10 @@ sub name {  # also called to check for availability
     $url .= '/swarm';
 
     my $swarm_attribs   = $self->GET( $url ) || {};
+    
+    if (ref $swarm_attribs ne 'HASH') {
+        $swarm_attribs = JSON->new->decode( $swarm_attribs );
+    }
 
     return $swarm_attribs->{'ID'};
 }
@@ -80,55 +84,16 @@ sub name {  # also called to check for availability
 sub _get_our_task_attribs {
     my ($self) = @_;
 
-    #my $container_prefix    = `hostname`; chomp $container_prefix;
-    #my $cmd = 'cat /proc/self/cgroup | grep docker | sed -e s/\\//\\n/g | tail -1';
     my $cmd = q(cat /proc/self/cgroup | grep docker | sed -e s/\\\\//\\\\n/g | tail -1);
     my $container_prefix    = `$cmd`; chomp $container_prefix;
 
-
-# ID                            HOSTNAME            STATUS              AVAILABILITY        MANAGER STATUS      ENGINE VERSION
-# lcprncbmd0z1523t0ft8ej9uy *   head-node           Ready               Active              Leader              18.09.0
-# ksactwapa4nxaaokcj1xw62pr     worker-1            Ready               Active                                  18.09.0
-# wcms6zxgq0hocoutznggs9r0u     worker-2            Ready               Active                                  18.09.0
-# ior43tdjz9x7n4bzzmr5njvcr     worker-3            Ready               Active                                  18.09.0
-# l6khe63f71z3ntv4abii3n9o1     worker-4            Ready               Active                                  18.09.0
-# nvmy341e4a3sqtt9k3cfdmc7w     worker-5            Ready               Active                                  18.09.0
-# w42pyk5wvoa0qrzbnjhn1yyt7     worker-6            Ready               Active                                  18.09.0
-# 28h1sk9zwkw53bkv4bi95q2f1     worker-7            Ready               Active                                  18.09.0
-# rldg2wm4h19oo9cxxrdbpx5n4     worker-8            Ready               Active                                  18.09.0
-# 72cv6frnei4gjdv3p3l8bmd3c     worker-9            Ready               Active                                  18.09.0
-# u21fny9eapmh09sflk45zzscz     worker-10           Ready               Active                                  18.09.0
-
-# my @docker_node_ls = qw(
-#     lcprncbmd0z1523t0ft8ej9uy     head-node 
-#     ksactwapa4nxaaokcj1xw62pr     worker-1  
-#     wcms6zxgq0hocoutznggs9r0u     worker-2  
-#     ior43tdjz9x7n4bzzmr5njvcr     worker-3  
-#     l6khe63f71z3ntv4abii3n9o1     worker-4  
-#     nvmy341e4a3sqtt9k3cfdmc7w     worker-5  
-#     w42pyk5wvoa0qrzbnjhn1yyt7     worker-6  
-#     28h1sk9zwkw53bkv4bi95q2f1     worker-7  
-#     rldg2wm4h19oo9cxxrdbpx5n4     worker-8  
-#     72cv6frnei4gjdv3p3l8bmd3c     worker-9  
-#     u21fny9eapmh09sflk45zzscz     worker-10 
-# );
-# 
-# my %hostname_to_node_id = reverse @docker_node_ls;
-# 
-use Data::Dumper;
-# print Dumper(\%hostname_to_node_id);
-# 
-# my $node_id = $hostname_to_node_id{$container_prefix};
-# 
-# print "My node id is: $node_id\n";
-print "My container_prefix is: $container_prefix\n";
+#     use Data::Dumper;
+#     print "My container_prefix is: $container_prefix\n";
 
     my $tasks_list          = $self->GET( '/tasks' );
-     my ($our_task_attribs)  = grep { ($_->{'Status'}{'ContainerStatus'}{'ContainerID'} || '') =~ /^${container_prefix}/ } @$tasks_list;
-#     my ($our_task_attribs)  = grep { ($_->{'ID'} || '') =~ /^$node_id/ } @$tasks_list;
+    my ($our_task_attribs)  = grep { ($_->{'Status'}{'ContainerStatus'}{'ContainerID'} || '') =~ /^${container_prefix}/ } @$tasks_list;
 
-print "My task attribs: " . Dumper($our_task_attribs);
-
+    #print "My task attribs: " . Dumper($our_task_attribs);
     return $our_task_attribs;
 }
 
@@ -194,24 +159,6 @@ sub status_of_all_our_workers { # returns an arrayref
     return \@status_list;
 }
 
-
-#sub check_worker_is_alive_and_mine {
-#    my ($self, $worker) = @_;
-#
-#    my $wpid = $worker->process_id();
-#    my $is_alive_and_mine = kill 0, $wpid;
-#
-#    return $is_alive_and_mine;
-#}
-#
-#
-#sub kill_worker {
-#    my ($self, $worker, $fast) = @_;
-#
-#    system('kill', '-9', $worker->process_id());
-#}
-
-
 sub submit_workers_return_meadow_pids {
     my ($self, $worker_cmd, $required_worker_count, $iteration, $rc_name, $rc_specific_submission_cmd_args, $submit_log_subdir) = @_;
 
@@ -224,7 +171,15 @@ sub submit_workers_return_meadow_pids {
     # Name collision detection
     my $extra_suffix = 0;
     my $service_name = $job_array_common_name;
-    while (scalar(@{ $self->GET( '/tasks?filters={"name":["' . $service_name . '"]}' ) })) {
+    
+    (
+        my $service_created_struct,
+        my $json_output_string
+    )
+        = $self->GET( '/tasks?filters={"name":["' . $service_name . '"]}' );
+
+    
+    while (scalar(@$service_created_struct)) {
         $extra_suffix++;
         $service_name = "$job_array_common_name-$extra_suffix";
     }
@@ -241,31 +196,49 @@ sub submit_workers_return_meadow_pids {
             'NanoCPUs'  => 1000000000,
         },
     };
+    
+    # Looks like this:
+    #
+    # 'Resources' => {
+    #     'Reservations' => {
+    #         'NanoCPUs' => 1000000000,
+    #         'MemoryBytes' => '34359738368'
+    #     },
+    #     'Limits' => {
+    #         'NanoCPUs' => 1000000000,
+    #         'MemoryBytes' => '34359738368'
+    #     }
+    # }
+    #
     my $resources = destringify($rc_specific_submission_cmd_args);
 
-    if (ref $resources eq 'HASH' && exists $resources->{Reservations} && exists $resources->{Reservations}->{MemoryBytes}) {
-    
-        print "Found reservations!";
-        
+    if (
+        ref $resources eq 'HASH' 
+        && exists $resources->{Reservations} 
+        && exists $resources->{Reservations}->{MemoryBytes}
+    ) {
         my $x = $resources->{Reservations}->{MemoryBytes};
         $x += 0;
         $resources->{Reservations}->{MemoryBytes} = $x;
     
-        my $x = $resources->{Limits}->{MemoryBytes};
+        $x = $resources->{Limits}->{MemoryBytes};
         $x += 0;
         $resources->{Limits}->{MemoryBytes} = $x;
-    
     }
-
-#       'Resources' => {
-#                                                'Reservations' => {
-#                                                                    'NanoCPUs' => 1000000000,
-#                                                                    'MemoryBytes' => '34359738368'
-#                                                                  },
-#                                                'Limits' => {
-#                                                              'NanoCPUs' => 1000000000,
-#                                                              'MemoryBytes' => '34359738368'
-#                                                            }
+    
+    if (
+        ref $resources eq 'HASH' 
+        && exists $resources->{Reservations} 
+        && exists $resources->{Reservations}->{NanoCPUs}
+    ) {
+        my $x = $resources->{Reservations}->{NanoCPUs};
+        $x += 0;
+        $resources->{Reservations}->{NanoCPUs} = $x;
+    
+        $x = $resources->{Limits}->{NanoCPUs};
+        $x += 0;
+        $resources->{Limits}->{NanoCPUs} = $x;
+    }
 
     my $service_create_data = {
         'Name'          => $job_array_common_name,      # NB: service names in DockerSwarm have to be unique!
@@ -301,18 +274,43 @@ sub submit_workers_return_meadow_pids {
     use Data::Dumper;
     print "\nSubmitting workers:\n";
     print Dumper($service_create_data);
+    
+    (
+        my $service_created_struct,
+        my $json_output_string
+    )
+        = $self->POST( '/services/create', $service_create_data );
 
-    my $service_created_struct  = $self->POST( '/services/create', $service_create_data );
-#    my $service_id              = $service_created_struct->{'ID'};
+    my $no_services_submitted 
+        = 
+            ( ref $service_created_struct eq 'HASH' ) 
+            && 
+            ( exists $service_created_struct->{message} )
+    ;
+    
+    if ($no_services_submitted) {
+    
+        warn "No service was submitted!";
+        warn "The response was:";
+        warn Dumper($json_output_string);
+        return ();
+    
+    }
+
     sleep(5);
+    
     # filters='{"name":["probemapping-Hive-default-24_1"]}'
     my $service_tasks_list_url = q(/tasks?filters={"name":[") . $job_array_common_name . q("]});
     print "--> service_tasks_list_url = $service_tasks_list_url\n";
-    my $service_tasks_list      = $self->GET( $service_tasks_list_url );
+    (
+        my $service_tasks_list,
+        my $json_output_string
+    )
+        = $self->GET( $service_tasks_list_url );
 
     print "\nservice_tasks_list:\n";
     print Dumper($service_tasks_list);
-
+    
     my @children_task_ids       = map { $_->{'ID'} } @$service_tasks_list;
 
     print "\nchildren_task_ids:\n";
@@ -321,6 +319,37 @@ sub submit_workers_return_meadow_pids {
     return \@children_task_ids;
 }
 
+# Overwrites the method in Bio::EnsEMBL::Hive::Utils::RESTclient
+# Returns the json_output_string for generating better error messages.
+#
+sub run_curl_capture_and_parse_result {
+    my ($self, $curl_cmd, $raw_json_output_filename) = @_;
+
+    my $url = join(' ',@$curl_cmd);
+    
+    open(my $curl_output_fh, "-|", @$curl_cmd) || die "Could not run '". $url ."' : $!, $?";
+    my $json_output_string  = <$curl_output_fh>;
+    close $curl_output_fh;
+
+    if($raw_json_output_filename) {
+        open(my $fh, '>', $raw_json_output_filename);
+        print $fh $json_output_string;
+        close $fh;
+    }
+    
+    my $perl_struct;
+    
+    if ($json_output_string) {
+        $perl_struct = JSON->new->decode( $json_output_string );
+    } else {
+        warn("Got no reply for: $url");
+    }
+
+#     warn("json_output_string = $json_output_string");
+#     warn("perl_struct = " . Dumper($perl_struct));
+    
+    return $perl_struct, $json_output_string;
+}
 
 sub run_on_host {   # Overrides Meadow::run_on_host ; not supported yet - it's just a placeholder to block the base class' functionality
     my ($self, $meadow_host, $meadow_user, $command) = @_;
