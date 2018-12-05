@@ -71,7 +71,11 @@ sub name {  # also called to check for availability
     }
     $url .= '/swarm';
 
-    my $swarm_attribs   = $self->GET( $url ) || {};
+    (
+        my $swarm_attribs,
+        my $json_output_string
+    )
+        = $self->GET( $url ) || {};
     
     if (ref $swarm_attribs ne 'HASH') {
         $swarm_attribs = JSON->new->decode( $swarm_attribs );
@@ -87,10 +91,12 @@ sub _get_our_task_attribs {
     my $cmd = q(cat /proc/self/cgroup | grep docker | sed -e s/\\\\//\\\\n/g | tail -1);
     my $container_prefix    = `$cmd`; chomp $container_prefix;
 
-#     use Data::Dumper;
-#     print "My container_prefix is: $container_prefix\n";
+    (
+        my $tasks_list,
+        my $json_output_string
+    )
+        = $self->GET( '/tasks' );
 
-    my $tasks_list          = $self->GET( '/tasks' );
     my ($our_task_attribs)  = grep { ($_->{'Status'}{'ContainerStatus'}{'ContainerID'} || '') =~ /^${container_prefix}/ } @$tasks_list;
 
     #print "My task attribs: " . Dumper($our_task_attribs);
@@ -101,7 +107,12 @@ sub _get_our_task_attribs {
 sub get_current_hostname {
     my ($self) = @_;
 
-    my $nodes_list          = $self->GET( '/nodes' );
+    (
+        my $nodes_list,
+        my $json_output_string
+    )
+        = $self->GET( '/nodes' );
+
     my %node_id_2_ip        = map { ($_->{'ID'} => $_->{'Status'}{'Addr'}) } @$nodes_list;
     my $our_node_ip         = $node_id_2_ip{ $self->_get_our_task_attribs()->{'NodeID'} };
 
@@ -128,8 +139,11 @@ sub deregister_local_process {
 sub status_of_all_our_workers { # returns an arrayref
     my ($self) = @_;
 
-    # my $service_tasks_struct    = $self->GET( '/tasks?filters={"name":["' . $service_name . '"]}' );
-    my $service_tasks_struct    = $self->GET( '/tasks' );
+    (
+        my $service_tasks_struct,
+        my $json_output_string
+    )
+        = $self->GET( '/tasks' );
 
     my @status_list = ();
     foreach my $task_entry (@$service_tasks_struct) {
@@ -157,6 +171,54 @@ sub status_of_all_our_workers { # returns an arrayref
     }
 
     return \@status_list;
+}
+
+sub type_resources_as_numeric {
+
+    # Looks like this:
+    #
+    # 'Resources' => {
+    #     'Reservations' => {
+    #         'NanoCPUs' => 1000000000,
+    #         'MemoryBytes' => '34359738368'
+    #     },
+    #     'Limits' => {
+    #         'NanoCPUs' => 1000000000,
+    #         'MemoryBytes' => '34359738368'
+    #     }
+    # }
+    #
+
+    my $resources = shift;
+
+    if (
+        ref $resources eq 'HASH' 
+        && exists $resources->{Reservations} 
+        && exists $resources->{Reservations}->{MemoryBytes}
+    ) {
+        my $x = $resources->{Reservations}->{MemoryBytes};
+        $x += 0;
+        $resources->{Reservations}->{MemoryBytes} = $x;
+    
+        $x = $resources->{Limits}->{MemoryBytes};
+        $x += 0;
+        $resources->{Limits}->{MemoryBytes} = $x;
+    }
+    
+    if (
+        ref $resources eq 'HASH' 
+        && exists $resources->{Reservations} 
+        && exists $resources->{Reservations}->{NanoCPUs}
+    ) {
+        my $x = $resources->{Reservations}->{NanoCPUs};
+        $x += 0;
+        $resources->{Reservations}->{NanoCPUs} = $x;
+    
+        $x = $resources->{Limits}->{NanoCPUs};
+        $x += 0;
+        $resources->{Limits}->{NanoCPUs} = $x;
+    }
+    return;
 }
 
 sub submit_workers_return_meadow_pids {
@@ -197,48 +259,8 @@ sub submit_workers_return_meadow_pids {
         },
     };
     
-    # Looks like this:
-    #
-    # 'Resources' => {
-    #     'Reservations' => {
-    #         'NanoCPUs' => 1000000000,
-    #         'MemoryBytes' => '34359738368'
-    #     },
-    #     'Limits' => {
-    #         'NanoCPUs' => 1000000000,
-    #         'MemoryBytes' => '34359738368'
-    #     }
-    # }
-    #
     my $resources = destringify($rc_specific_submission_cmd_args);
-
-    if (
-        ref $resources eq 'HASH' 
-        && exists $resources->{Reservations} 
-        && exists $resources->{Reservations}->{MemoryBytes}
-    ) {
-        my $x = $resources->{Reservations}->{MemoryBytes};
-        $x += 0;
-        $resources->{Reservations}->{MemoryBytes} = $x;
-    
-        $x = $resources->{Limits}->{MemoryBytes};
-        $x += 0;
-        $resources->{Limits}->{MemoryBytes} = $x;
-    }
-    
-    if (
-        ref $resources eq 'HASH' 
-        && exists $resources->{Reservations} 
-        && exists $resources->{Reservations}->{NanoCPUs}
-    ) {
-        my $x = $resources->{Reservations}->{NanoCPUs};
-        $x += 0;
-        $resources->{Reservations}->{NanoCPUs} = $x;
-    
-        $x = $resources->{Limits}->{NanoCPUs};
-        $x += 0;
-        $resources->{Limits}->{NanoCPUs} = $x;
-    }
+    type_resources_as_numeric($resources);
 
     my $service_create_data = {
         'Name'          => $job_array_common_name,      # NB: service names in DockerSwarm have to be unique!
@@ -276,8 +298,8 @@ sub submit_workers_return_meadow_pids {
     print Dumper($service_create_data);
     
     (
-        my $service_created_struct,
-        my $json_output_string
+        $service_created_struct,
+        $json_output_string
     )
         = $self->POST( '/services/create', $service_create_data );
 
@@ -304,7 +326,7 @@ sub submit_workers_return_meadow_pids {
     print "--> service_tasks_list_url = $service_tasks_list_url\n";
     (
         my $service_tasks_list,
-        my $json_output_string
+        $json_output_string
     )
         = $self->GET( $service_tasks_list_url );
 
